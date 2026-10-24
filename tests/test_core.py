@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
+import wave
 from pathlib import Path
 
 import cv2
@@ -16,14 +18,20 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from analytics_engine import (
     EngagementScorer,
+    AudioSample,
+    AudioWindow,
     FaceDetection,
     FaceTracker,
     analyze_audio_samples,
+    analyze_audio_file_windows,
+    audio_sample_at,
     classify_audio_activity,
     estimate_head_pose,
     generate_session_analytics,
 )
 from llm_agent import LocalTeachingAgent
+from reporting import build_session_pdf
+from session_store import clear_history, list_sessions, load_session, save_session
 
 
 class FaceTrackerTests(unittest.TestCase):
@@ -44,6 +52,39 @@ class FaceTrackerTests(unittest.TestCase):
 
 
 class EngagementTests(unittest.TestCase):
+    def test_audio_file_is_loaded_as_sequential_one_second_windows(self) -> None:
+        sample_rate = 16_000
+        time_axis = np.arange(sample_rate * 2) / sample_rate
+        samples = 0.2 * np.sin(2.0 * np.pi * 200.0 * time_axis)
+        pcm_samples = np.int16(samples * 32_767)
+
+        with tempfile.TemporaryDirectory() as directory:
+            audio_path = Path(directory) / "sample.wav"
+            with wave.open(str(audio_path), "wb") as audio_file:
+                audio_file.setnchannels(1)
+                audio_file.setsampwidth(2)
+                audio_file.setframerate(sample_rate)
+                audio_file.writeframes(pcm_samples.tobytes())
+
+            windows = analyze_audio_file_windows(str(audio_path))
+
+        self.assertEqual(len(windows), 2)
+        self.assertEqual((windows[0].start_seconds, windows[0].end_seconds), (0.0, 1.0))
+        self.assertEqual((windows[1].start_seconds, windows[1].end_seconds), (1.0, 2.0))
+        self.assertEqual(windows[0].sample.activity_label, "speech_likely")
+
+    def test_audio_window_selection_tracks_elapsed_time_and_silence(self) -> None:
+        first_sample = AudioSample(0.2, -14.0, 0.7, "start", "speech_likely", 0.8)
+        second_sample = AudioSample(0.0, -55.0, 0.0, "next", "quiet", 0.0)
+        windows = [
+            AudioWindow(0.0, 1.0, first_sample),
+            AudioWindow(1.0, 2.0, second_sample),
+        ]
+
+        self.assertIs(audio_sample_at(windows, 0.5), first_sample)
+        self.assertIs(audio_sample_at(windows, 1.5), second_sample)
+        self.assertEqual(audio_sample_at(windows, 2.0).activity_label, "quiet")
+
     def test_symmetric_landmarks_produce_near_centered_head_pose(self) -> None:
         """Swapping a centered face for an asymmetric one must alter focus."""
         pose = estimate_head_pose(
@@ -133,6 +174,64 @@ class LocalAgentTests(unittest.TestCase):
         suggestions = agent.request_suggestions({"engagement_score": 42.0})
         self.assertEqual(len(suggestions), 3)
         self.assertEqual(suggestions[0].title, "Think-pair-share")
+
+
+class SessionStoreTests(unittest.TestCase):
+    def test_sessions_round_trip_and_clear_from_local_database(self) -> None:
+        metrics = pd.DataFrame(
+            [{"timestamp": "2026-10-24T09:00:00+00:00", "engagement_score": 72.5}]
+        )
+        attendance = pd.DataFrame(
+            [{"profile_id": "PROFILE-001", "status": "Present", "cumulative_frames": 20}]
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "history.sqlite3"
+            session_id = save_session(
+                metrics,
+                attendance,
+                "Uploaded audio",
+                started_at="2026-10-24T09:00:00+00:00",
+                database_path=database_path,
+            )
+
+            summaries = list_sessions(database_path)
+            loaded = load_session(session_id, database_path)
+            self.assertEqual(len(summaries), 1)
+            self.assertEqual(summaries[0]["audio_source"], "Uploaded audio")
+            self.assertAlmostEqual(float(loaded["metrics"].iloc[0]["engagement_score"]), 72.5)
+            self.assertEqual(loaded["attendance"].iloc[0]["status"], "Present")
+            self.assertEqual(clear_history(database_path), 1)
+            self.assertEqual(list_sessions(database_path), [])
+
+
+class ReportTests(unittest.TestCase):
+    def test_session_pdf_is_generated_in_memory(self) -> None:
+        metrics = pd.DataFrame(
+            [
+                {
+                    "timestamp": "2026-10-24T09:00:00+00:00",
+                    "engagement_score": 70.0,
+                    "focus_score": 80.0,
+                    "movement_score": 50.0,
+                    "audio_activity": "speech_likely",
+                }
+            ]
+        )
+        attendance = pd.DataFrame(
+            [{"profile_id": "PROFILE-001", "status": "Present", "cumulative_frames": 20}]
+        )
+        summary = {
+            "mean_engagement": 70.0,
+            "minimum_engagement": 70.0,
+            "present_profiles": 1,
+            "attendance_rate": 100.0,
+        }
+
+        document = build_session_pdf(
+            metrics, attendance, summary, "2026-10-24 09:00 UTC", "Uploaded audio"
+        )
+        self.assertTrue(document.startswith(b"%PDF-"))
 
 
 class OpenCVRuntimeTests(unittest.TestCase):

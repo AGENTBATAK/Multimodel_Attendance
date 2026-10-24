@@ -359,6 +359,15 @@ class AudioSample:
 
 
 @dataclass(frozen=True)
+class AudioWindow:
+    """Audio activity features associated with one elapsed-time interval."""
+
+    start_seconds: float
+    end_seconds: float
+    sample: AudioSample
+
+
+@dataclass(frozen=True)
 class AudioActivity:
     """Lightweight, non-semantic audio activity classification."""
 
@@ -415,6 +424,56 @@ def analyze_audio_file(file_path: str) -> AudioSample:
         raise RuntimeError("Librosa is not installed. Install requirements.txt first.") from error
     samples, sample_rate = librosa.load(str(source), sr=None, mono=True)
     return analyze_audio_samples(samples, int(sample_rate))
+
+
+def analyze_audio_file_windows(
+    file_path: str,
+    segment_seconds: float = config.AUDIO_WINDOW_SECONDS,
+) -> List[AudioWindow]:
+    """Analyze local audio in fixed windows suitable for video-time alignment."""
+    source = Path(file_path)
+    if not source.is_file():
+        raise FileNotFoundError(f"Audio file was not found: {source}")
+    if segment_seconds <= 0:
+        raise ValueError("segment_seconds must be positive.")
+    try:
+        import librosa
+    except ImportError as error:
+        raise RuntimeError("Librosa is not installed. Install requirements.txt first.") from error
+
+    samples, sample_rate = librosa.load(
+        str(source), sr=config.AUDIO_SAMPLE_RATE, mono=True
+    )
+    samples = np.asarray(samples, dtype=np.float64).reshape(-1)
+    window_size = max(1, int(sample_rate * segment_seconds))
+    windows: List[AudioWindow] = []
+    for start_index in range(0, samples.size, window_size):
+        end_index = min(start_index + window_size, samples.size)
+        windows.append(
+            AudioWindow(
+                start_seconds=start_index / sample_rate,
+                end_seconds=end_index / sample_rate,
+                sample=analyze_audio_samples(samples[start_index:end_index], sample_rate),
+            )
+        )
+    return windows
+
+
+def audio_sample_at(
+    windows: Sequence[AudioWindow], elapsed_seconds: float
+) -> AudioSample:
+    """Return the audio features for a time offset, or silence outside the file."""
+    for window in windows:
+        if window.start_seconds <= elapsed_seconds < window.end_seconds:
+            return window.sample
+    return AudioSample(
+        rms=0.0,
+        decibels_full_scale=config.AUDIO_SILENCE_DBFS,
+        normalized_level=0.0,
+        captured_at=utc_now_iso(),
+        activity_label="quiet",
+        speech_likelihood=0.0,
+    )
 
 
 class AudioActivityMonitor:

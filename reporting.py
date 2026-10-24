@@ -45,12 +45,17 @@ def build_session_pdf(
     ]
 
     kpi_rows = [
-        ["Mean engagement", "Minimum engagement", "Present profiles", "Attendance rate"],
+        ["Mean engagement", "Minimum engagement", "Confirmed IDs", "Roster attendance"],
         [
             f"{float(summary['mean_engagement']):.1f}/100",
             f"{float(summary['minimum_engagement']):.1f}/100",
-            str(summary["present_profiles"]),
-            f"{float(summary['attendance_rate']):.1f}%",
+            f"{summary['present_profiles']}/{summary['tracked_profiles']}",
+            (
+                f"{summary['present_profiles']}/{summary['expected_participants']} "
+                f"({float(summary['attendance_rate']):.1f}%)"
+                if summary.get("attendance_rate") is not None
+                else "Not configured"
+            ),
         ],
     ]
     story.append(

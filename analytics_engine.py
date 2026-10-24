@@ -639,19 +639,32 @@ class MetricsLogger:
 
 
 def generate_session_analytics(
-    attendance: pd.DataFrame, metrics: pd.DataFrame
-) -> Dict[str, float | int]:
-    """Generate aggregate session analytics without exporting biometric data."""
+    attendance: pd.DataFrame,
+    metrics: pd.DataFrame,
+    expected_participants: Optional[int] = None,
+) -> Dict[str, float | int | None]:
+    """Summarize tracked IDs separately from roster-based attendance."""
+    if expected_participants is not None and expected_participants < 1:
+        raise ValueError("expected_participants must be positive when provided.")
     tracked_profiles = int(len(attendance.index))
     present_profiles = int((attendance.get("status", pd.Series(dtype=str)) == "Present").sum())
-    attendance_rate = (present_profiles / tracked_profiles * 100.0) if tracked_profiles else 0.0
+    track_confirmation_rate = (
+        present_profiles / tracked_profiles * 100.0 if tracked_profiles else 0.0
+    )
+    attendance_rate = (
+        present_profiles / expected_participants * 100.0
+        if expected_participants is not None
+        else None
+    )
     engagement_column = metrics.get("engagement_score", pd.Series(dtype=float))
     mean_engagement = float(engagement_column.mean()) if not engagement_column.empty else 0.0
     minimum_engagement = float(engagement_column.min()) if not engagement_column.empty else 0.0
     return {
         "tracked_profiles": tracked_profiles,
         "present_profiles": present_profiles,
-        "attendance_rate": round(attendance_rate, 2),
+        "track_confirmation_rate": round(track_confirmation_rate, 2),
+        "expected_participants": expected_participants,
+        "attendance_rate": round(attendance_rate, 2) if attendance_rate is not None else None,
         "mean_engagement": round(mean_engagement, 2),
         "minimum_engagement": round(minimum_engagement, 2),
     }

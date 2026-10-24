@@ -8,7 +8,7 @@ from pathlib import Path
 import sqlite3
 from tempfile import NamedTemporaryFile
 from time import monotonic
-from typing import Deque, Dict, Optional, Sequence, Tuple, Union
+from typing import Deque, Dict, Optional, Sequence, Tuple, Union, cast
 
 import cv2
 import pandas as pd
@@ -32,7 +32,13 @@ from analytics_engine import (
 from app import calculate_frame_engagement, draw_overlay, metrics_payload, should_trigger_agent
 from llm_agent import LocalLLMError, LocalTeachingAgent
 from reporting import build_session_pdf
-from session_store import clear_history, list_sessions, load_session, save_session
+from session_store import (
+    clear_history,
+    list_sessions,
+    load_session,
+    save_session,
+    update_session_roster,
+)
 
 
 def persist_upload(upload, suffix: str) -> Path:
@@ -127,7 +133,7 @@ def run_analysis(
 
             if frame_index % config.DASHBOARD_FRAME_UPDATE_INTERVAL == 0:
                 draw_overlay(frame, update, engagement)
-                preview.image(frame, channels="BGR", use_container_width=True)
+                preview.image(frame, channels="BGR", width="stretch")
                 latest_frame = frame.copy()
                 status.caption(
                     f"Frame {frame_index + 1} · engagement {engagement.score:.1f}/100 · "
@@ -193,6 +199,7 @@ def main() -> None:
         "session_suggestions": [],
         "session_id": None,
         "session_started_at": None,
+        "session_expected_participants": None,
         "confirm_clear_history": False,
     }
     for key, value in defaults.items():
@@ -226,9 +233,17 @@ def main() -> None:
             value=config.DASHBOARD_DEFAULT_MAX_FRAMES,
             step=30,
         )
+        expected_participants = st.number_input(
+            "Expected class size (optional)",
+            min_value=1,
+            max_value=300,
+            value=None,
+            step=1,
+            key="expected_participants",
+        )
         ask_agent = st.checkbox("Request local Ollama suggestions", value=False)
         save_history = st.checkbox("Save reports to local history", value=True)
-        run_clicked = st.button("Start analysis", type="primary", use_container_width=True)
+        run_clicked = st.button("Start analysis", type="primary", width="stretch")
         st.divider()
         st.caption("Media is temporary. Saved reports contain aggregate metrics and anonymous IDs.")
 
@@ -243,7 +258,7 @@ def main() -> None:
         st.markdown(f"### {title}")
     if view != "Live monitor":
         with top_right:
-            st.button("Back to dashboard", on_click=go_to_live, use_container_width=True)
+            st.button("Back to dashboard", on_click=go_to_live, width="stretch")
 
     if run_clicked:
         temporary_paths = []
@@ -287,6 +302,7 @@ def main() -> None:
                 st.session_state.session_suggestions = []
                 st.session_state.session_started_at = session_started_at
                 st.session_state.session_id = None
+                st.session_state.session_expected_participants = expected_participants
                 if save_history:
                     try:
                         st.session_state.session_id = save_session(
@@ -294,6 +310,7 @@ def main() -> None:
                             attendance,
                             audio_source,
                             started_at=session_started_at,
+                            expected_participants=expected_participants,
                         )
                     except (OSError, sqlite3.Error) as error:
                         st.warning(f"Session completed, but local history could not be saved: {error}")
@@ -330,7 +347,7 @@ def main() -> None:
                 live_header.markdown("#### Live video")
                 live_status.markdown("**LIVE**" if has_session else "**READY**")
                 if st.session_state.session_frame is not None:
-                    st.image(st.session_state.session_frame, channels="BGR", use_container_width=True)
+                    st.image(st.session_state.session_frame, channels="BGR", width="stretch")
                 else:
                     st.info("Choose a webcam or video file, then start a local analysis session.")
             profile_col, suggestion_col = st.columns(2, gap="medium")
@@ -340,7 +357,7 @@ def main() -> None:
                     if has_session and not attendance.empty:
                         st.dataframe(
                             attendance[["profile_id", "status", "cumulative_frames", "active"]],
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                         )
                     else:
@@ -356,10 +373,24 @@ def main() -> None:
         with insight_col:
             if has_session:
                 current = metrics.iloc[-1]
-                summary = generate_session_analytics(attendance, metrics)
+                summary = generate_session_analytics(
+                    attendance,
+                    metrics,
+                    expected_participants=expected_participants,
+                )
                 st.metric("Profiles present", int(current["present_profiles"]))
                 st.metric("Engagement", f"{current['engagement_score']:.1f} / 100")
-                st.metric("Attendance", f"{summary['attendance_rate']:.1f}%")
+                roster_attendance = (
+                    f"{summary['present_profiles']}/{expected_participants} "
+                    f"({summary['attendance_rate']:.1f}%)"
+                    if summary["attendance_rate"] is not None
+                    else "Set class size"
+                )
+                st.metric("Roster attendance", roster_attendance)
+                st.caption(
+                    f"{summary['present_profiles']} of {summary['tracked_profiles']} detected IDs "
+                    "met the presence threshold."
+                )
                 with st.container(border=True):
                     st.markdown("#### Audio activity")
                     st.caption(st.session_state.session_audio_source)
@@ -375,7 +406,7 @@ def main() -> None:
 
     elif view == "Analytics & reports":
         st.markdown("## Session analytics")
-        st.caption("Engagement and attendance summaries from local session records")
+        st.caption("Roster attendance uses expected class size; detected IDs are reported separately.")
         session_options = {}
         if has_session:
             current_started_at = st.session_state.session_started_at or "Current session"
@@ -397,28 +428,87 @@ def main() -> None:
                 report_attendance = attendance
                 report_audio_source = st.session_state.session_audio_source
                 report_started_at = st.session_state.session_started_at or "Current session"
+                report_expected_participants = expected_participants
             else:
                 saved_record = load_session(selected_id)
                 if saved_record is None:
                     st.warning("That saved session is no longer available.")
                     st.stop()
-                report_metrics = saved_record["metrics"]
-                report_attendance = saved_record["attendance"]
+                report_metrics = cast(pd.DataFrame, saved_record["metrics"])
+                report_attendance = cast(pd.DataFrame, saved_record["attendance"])
                 report_audio_source = str(saved_record["audio_source"])
                 report_started_at = str(saved_record["started_at"])
+                saved_expected_participants = saved_record["expected_participants"]
+                report_expected_participants = (
+                    int(saved_expected_participants)
+                    if saved_expected_participants is not None
+                    else None
+                )
 
-            summary = generate_session_analytics(report_attendance, report_metrics)
+            roster_widget_key = f"report_roster_{selected_id or 'current'}"
+            if roster_widget_key not in st.session_state:
+                st.session_state[roster_widget_key] = report_expected_participants
+            roster_col, save_roster_col = st.columns([3, 1])
+            with roster_col:
+                report_expected_participants = st.number_input(
+                    "Expected class size",
+                    min_value=1,
+                    max_value=300,
+                    step=1,
+                    key=roster_widget_key,
+                )
+            report_session_id = selected_id or st.session_state.session_id
+            with save_roster_col:
+                save_roster = st.button(
+                    "Save class size",
+                    disabled=report_expected_participants is None or report_session_id is None,
+                    width="stretch",
+                )
+            if save_roster and report_session_id is not None:
+                if update_session_roster(report_session_id, report_expected_participants):
+                    if selected_id is None:
+                        st.session_state.session_expected_participants = report_expected_participants
+                    st.success("Class size saved with this report.")
+                    st.rerun()
+                else:
+                    st.warning("The saved session could not be updated.")
+
+            summary = generate_session_analytics(
+                report_attendance,
+                report_metrics,
+                expected_participants=report_expected_participants,
+            )
             top_a, top_b, top_c = st.columns(3)
             top_a.metric("Mean engagement", f"{summary['mean_engagement']:.1f} / 100")
-            top_b.metric("Profiles present", summary["present_profiles"])
-            top_c.metric("Attendance rate", f"{summary['attendance_rate']:.1f}%")
+            top_b.metric(
+                "Confirmed detected IDs",
+                f"{summary['present_profiles']} / {summary['tracked_profiles']}",
+            )
+            top_c.metric(
+                "Roster attendance",
+                (
+                    f"{summary['present_profiles']}/{report_expected_participants} "
+                    f"({summary['attendance_rate']:.1f}%)"
+                    if summary["attendance_rate"] is not None
+                    else "Set class size"
+                ),
+            )
+            st.caption(
+                f"Detected-ID confirmation: {summary['track_confirmation_rate']:.1f}%. "
+                "Short-lived detections can create extra anonymous IDs."
+            )
+            if (
+                report_expected_participants is not None
+                and summary["present_profiles"] > report_expected_participants
+            ):
+                st.warning("More profiles were marked present than the expected class size; review possible duplicate tracks.")
             download_col, pdf_col, clear_col = st.columns([1.3, 1.4, 1])
             download_col.download_button(
                 "Download CSV data",
                 data=report_metrics.to_csv(index=False).encode("utf-8"),
                 file_name="session_metrics.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
             pdf_col.download_button(
                 "Download PDF report",
@@ -431,7 +521,7 @@ def main() -> None:
                 ),
                 file_name="session_report.pdf",
                 mime="application/pdf",
-                use_container_width=True,
+                width="stretch",
             )
             if clear_col.button("Clear saved history"):
                 st.session_state.confirm_clear_history = True
@@ -460,7 +550,7 @@ def main() -> None:
                     activity_counts = report_metrics["audio_activity"].value_counts().rename_axis("activity").to_frame("samples")
                     st.bar_chart(activity_counts, height=280)
             st.markdown("#### Attendance")
-            st.dataframe(report_attendance, use_container_width=True, hide_index=True)
+            st.dataframe(report_attendance, width="stretch", hide_index=True)
             st.caption(
                 f"Minimum engagement {summary['minimum_engagement']:.1f}/100. Audio source: "
                 f"{report_audio_source.lower()}."
@@ -473,13 +563,24 @@ def main() -> None:
         st.caption("A summary of observed engagement signals, not a measure of teaching quality")
         profile_metrics = metrics
         profile_attendance = attendance
+        profile_expected_participants = expected_participants
         if profile_metrics.empty and saved_sessions:
             latest_record = load_session(str(saved_sessions[0]["session_id"]))
             if latest_record is not None:
-                profile_metrics = latest_record["metrics"]
-                profile_attendance = latest_record["attendance"]
+                profile_metrics = cast(pd.DataFrame, latest_record["metrics"])
+                profile_attendance = cast(pd.DataFrame, latest_record["attendance"])
+                saved_expected_participants = latest_record["expected_participants"]
+                profile_expected_participants = (
+                    int(saved_expected_participants)
+                    if saved_expected_participants is not None
+                    else None
+                )
         if not profile_metrics.empty:
-            summary = generate_session_analytics(profile_attendance, profile_metrics)
+            summary = generate_session_analytics(
+                profile_attendance,
+                profile_metrics,
+                expected_participants=profile_expected_participants,
+            )
             focus_average = float(profile_metrics["focus_score"].mean())
             movement_average = float(profile_metrics["movement_score"].mean())
             audio_average = float(profile_metrics["audio_score"].mean())
@@ -488,7 +589,13 @@ def main() -> None:
                 with st.container(border=True):
                     st.markdown("#### Session engagement")
                     st.metric("Average score", f"{summary['mean_engagement']:.1f} / 100")
-                    st.caption(f"Attendance rate {summary['attendance_rate']:.1f}%")
+                    if summary["attendance_rate"] is not None:
+                        st.caption(f"Roster attendance {summary['attendance_rate']:.1f}%")
+                    else:
+                        st.caption(
+                            f"No class size set. {summary['present_profiles']} of "
+                            f"{summary['tracked_profiles']} detected IDs were confirmed."
+                        )
             with strengths_col:
                 with st.container(border=True):
                     st.markdown("#### Strongest signals")
@@ -517,7 +624,17 @@ def main() -> None:
                         with st.container(border=True):
                             st.markdown(f"**{entry['started_at']}**")
                             st.markdown(f"{entry['mean_engagement']:.1f} / 100 engagement")
-                            st.caption(f"{entry['present_profiles']} of {entry['tracked_profiles']} profiles present")
+                            if entry["expected_participants"]:
+                                rate = float(entry["roster_attendance_rate"] or 0.0)
+                                st.caption(
+                                    f"Roster attendance {entry['present_profiles']}/"
+                                    f"{entry['expected_participants']} ({rate:.1f}%)"
+                                )
+                            else:
+                                st.caption(
+                                    f"{entry['present_profiles']} of {entry['tracked_profiles']} "
+                                    "detected IDs confirmed; no roster size saved"
+                                )
             else:
                 st.caption("No saved sessions available for comparison.")
         else:

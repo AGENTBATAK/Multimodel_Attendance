@@ -35,6 +35,8 @@ def _initialize(connection: sqlite3.Connection) -> None:
             tracked_profiles INTEGER NOT NULL,
             present_profiles INTEGER NOT NULL,
             attendance_rate REAL NOT NULL,
+            expected_participants INTEGER,
+            roster_attendance_rate REAL,
             mean_engagement REAL NOT NULL,
             minimum_engagement REAL NOT NULL,
             metrics_json TEXT NOT NULL,
@@ -42,6 +44,13 @@ def _initialize(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+    }
+    if "expected_participants" not in columns:
+        connection.execute("ALTER TABLE sessions ADD COLUMN expected_participants INTEGER")
+    if "roster_attendance_rate" not in columns:
+        connection.execute("ALTER TABLE sessions ADD COLUMN roster_attendance_rate REAL")
 
 
 def save_session(
@@ -49,12 +58,15 @@ def save_session(
     attendance: pd.DataFrame,
     audio_source: str,
     started_at: Optional[str] = None,
+    expected_participants: Optional[int] = None,
     database_path: Optional[Path] = None,
 ) -> str:
     """Save aggregate session data and return its opaque local identifier."""
     path = database_path or default_database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    summary = generate_session_analytics(attendance, metrics)
+    summary = generate_session_analytics(
+        attendance, metrics, expected_participants=expected_participants
+    )
     session_id = str(uuid4())
     observed_at = started_at or datetime.now(timezone.utc).isoformat()
     with closing(sqlite3.connect(path)) as connection:
@@ -64,9 +76,10 @@ def save_session(
                 """
                 INSERT INTO sessions (
                     session_id, started_at, audio_source, tracked_profiles,
-                    present_profiles, attendance_rate, mean_engagement,
-                    minimum_engagement, metrics_json, attendance_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    present_profiles, attendance_rate, expected_participants,
+                    roster_attendance_rate, mean_engagement, minimum_engagement,
+                    metrics_json, attendance_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -74,6 +87,8 @@ def save_session(
                     audio_source,
                     summary["tracked_profiles"],
                     summary["present_profiles"],
+                    summary["track_confirmation_rate"],
+                    expected_participants,
                     summary["attendance_rate"],
                     summary["mean_engagement"],
                     summary["minimum_engagement"],
@@ -104,8 +119,9 @@ def list_sessions(database_path: Optional[Path] = None) -> list[Dict[str, object
             rows = connection.execute(
                 """
                 SELECT session_id, started_at, audio_source, tracked_profiles,
-                       present_profiles, attendance_rate, mean_engagement,
-                       minimum_engagement
+                      present_profiles, attendance_rate AS track_confirmation_rate,
+                      expected_participants, roster_attendance_rate,
+                      mean_engagement, minimum_engagement
                 FROM sessions ORDER BY started_at DESC LIMIT 50
                 """
             ).fetchall()
@@ -130,6 +146,32 @@ def load_session(session_id: str, database_path: Optional[Path] = None) -> Optio
     record["metrics"] = pd.read_json(StringIO(record.pop("metrics_json")), orient="records")
     record["attendance"] = pd.read_json(StringIO(record.pop("attendance_json")), orient="records")
     return record
+
+
+def update_session_roster(
+    session_id: str,
+    expected_participants: int,
+    database_path: Optional[Path] = None,
+) -> bool:
+    """Update a saved session's expected class size and roster attendance."""
+    if expected_participants < 1:
+        raise ValueError("expected_participants must be positive.")
+    path = database_path or default_database_path()
+    if not path.is_file():
+        return False
+    with closing(sqlite3.connect(path)) as connection:
+        with connection:
+            _initialize(connection)
+            cursor = connection.execute(
+                """
+                UPDATE sessions
+                SET expected_participants = ?,
+                    roster_attendance_rate = present_profiles * 100.0 / ?
+                WHERE session_id = ?
+                """,
+                (expected_participants, expected_participants, session_id),
+            )
+            return cursor.rowcount == 1
 
 
 def clear_history(database_path: Optional[Path] = None) -> int:

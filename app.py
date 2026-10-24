@@ -1,5 +1,5 @@
 import streamlit as st
-from analytics_engine import calculate_attendance, track_attendance
+from analytics_engine import calculate_attendance, track_attendance, handle_detection_dropouts
 
 def setup_session():
     st.title("Multimodel Attendance")

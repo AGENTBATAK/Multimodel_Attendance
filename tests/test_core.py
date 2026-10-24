@@ -31,7 +31,13 @@ from analytics_engine import (
 )
 from llm_agent import LocalTeachingAgent
 from reporting import build_session_pdf
-from session_store import clear_history, list_sessions, load_session, save_session
+from session_store import (
+    clear_history,
+    list_sessions,
+    load_session,
+    save_session,
+    update_session_roster,
+)
 
 
 class FaceTrackerTests(unittest.TestCase):
@@ -144,8 +150,32 @@ class EngagementTests(unittest.TestCase):
         summary = generate_session_analytics(attendance, metrics)
         self.assertEqual(summary["present_profiles"], 1)
         self.assertEqual(summary["tracked_profiles"], 2)
-        self.assertAlmostEqual(float(summary["attendance_rate"]), 50.0)
+        self.assertAlmostEqual(float(summary["track_confirmation_rate"]), 50.0)
+        self.assertIsNone(summary["attendance_rate"])
         self.assertAlmostEqual(float(summary["mean_engagement"]), 60.0)
+
+        roster_summary = generate_session_analytics(
+            attendance, metrics, expected_participants=25
+        )
+        self.assertAlmostEqual(float(roster_summary["attendance_rate"]), 4.0)
+
+    def test_expected_participants_must_be_positive(self) -> None:
+        with self.assertRaises(ValueError):
+            generate_session_analytics(pd.DataFrame(), pd.DataFrame(), expected_participants=0)
+
+    def test_roster_attendance_uses_expected_class_size_not_transient_ids(self) -> None:
+        attendance = pd.DataFrame(
+            [{"status": "Present"}] + [{"status": "Absent"} for _ in range(11)]
+        )
+
+        summary = generate_session_analytics(
+            attendance, pd.DataFrame(), expected_participants=25
+        )
+
+        self.assertEqual(summary["present_profiles"], 1)
+        self.assertEqual(summary["tracked_profiles"], 12)
+        self.assertEqual(summary["track_confirmation_rate"], 8.33)
+        self.assertEqual(summary["attendance_rate"], 4.0)
 
 
 class LocalAgentTests(unittest.TestCase):
@@ -192,6 +222,7 @@ class SessionStoreTests(unittest.TestCase):
                 attendance,
                 "Uploaded audio",
                 started_at="2026-10-24T09:00:00+00:00",
+                expected_participants=25,
                 database_path=database_path,
             )
 
@@ -199,8 +230,13 @@ class SessionStoreTests(unittest.TestCase):
             loaded = load_session(session_id, database_path)
             self.assertEqual(len(summaries), 1)
             self.assertEqual(summaries[0]["audio_source"], "Uploaded audio")
+            self.assertEqual(summaries[0]["expected_participants"], 25)
+            self.assertAlmostEqual(summaries[0]["roster_attendance_rate"], 4.0)
             self.assertAlmostEqual(float(loaded["metrics"].iloc[0]["engagement_score"]), 72.5)
+            self.assertEqual(loaded["expected_participants"], 25)
             self.assertEqual(loaded["attendance"].iloc[0]["status"], "Present")
+            self.assertTrue(update_session_roster(session_id, 20, database_path))
+            self.assertAlmostEqual(list_sessions(database_path)[0]["roster_attendance_rate"], 5.0)
             self.assertEqual(clear_history(database_path), 1)
             self.assertEqual(list_sessions(database_path), [])
 
@@ -225,7 +261,10 @@ class ReportTests(unittest.TestCase):
             "mean_engagement": 70.0,
             "minimum_engagement": 70.0,
             "present_profiles": 1,
-            "attendance_rate": 100.0,
+            "tracked_profiles": 1,
+            "track_confirmation_rate": 100.0,
+            "expected_participants": None,
+            "attendance_rate": None,
         }
 
         document = build_session_pdf(

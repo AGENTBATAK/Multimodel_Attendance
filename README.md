@@ -40,6 +40,7 @@ The dashboard accepts webcam/video input, optional audio files processed locally
 - The SQLite database is stored outside the project folder: `%LOCALAPPDATA%\MultimodelAttendance\session_history.sqlite3` on Windows, or `$XDG_DATA_HOME/MultimodelAttendance/session_history.sqlite3` on Linux/macOS (defaulting to `~/.local/share`).
 - Saved reports contain aggregate metrics and temporary profile labels only. Video frames and raw audio are not stored. Use **Clear saved history** on the Analytics page to delete saved sessions.
 - Analytics can export CSV metrics and a PDF session report.
+- Set **Expected class size** in the sidebar to calculate roster attendance. Without a roster count, the dashboard reports how many anonymous detected IDs met the presence threshold; it does not label that detection-confirmation ratio as class attendance.
 
 Engagement is a heuristic built from approximate visual focus, movement, and audio activity. The application does not identify people, classify emotions, transcribe speech, or measure teaching quality. Profile IDs are anonymous, session-local tracking labels.
 

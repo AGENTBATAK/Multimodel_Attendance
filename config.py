@@ -24,6 +24,7 @@ SUSTAINED_INACTIVITY_PROFILE_RATIO = 0.60
 # Audio is normalized to the 0-1 range from RMS dBFS measurements.
 AUDIO_SAMPLE_RATE = 16_000
 AUDIO_BLOCK_SIZE = 1_024
+AUDIO_WINDOW_SECONDS = 1.0
 AUDIO_SILENCE_DBFS = -55.0
 
 # The Ollama endpoint is deliberately loopback-only to preserve offline operation.

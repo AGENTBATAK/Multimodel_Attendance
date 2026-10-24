@@ -133,7 +133,12 @@ def run_analysis(
 
             if frame_index % config.DASHBOARD_FRAME_UPDATE_INTERVAL == 0:
                 draw_overlay(frame, update, engagement)
-                preview.image(frame, channels="BGR", width="stretch")
+                preview.image(
+                    frame,
+                    channels="BGR",
+                    width="stretch",
+                    alt="Most recently analyzed frame with anonymous tracking overlays",
+                )
                 latest_frame = frame.copy()
                 status.caption(
                     f"Frame {frame_index + 1} · engagement {engagement.score:.1f}/100 · "
@@ -151,46 +156,10 @@ def main() -> None:
     """Render the local classroom dashboard and its session-scoped reports."""
     import streamlit as st
 
-    st.set_page_config(page_title="Attendance Monitor", page_icon="◉", layout="wide")
-
-    st.markdown(
-        """
-        <style>
-        :root { color-scheme: dark; }
-        .stApp { background: #080d1b; color: #edf2ff; }
-        [data-testid="stHeader"] { display: none; }
-        [data-testid="stSidebar"] { background: #10192d; border-right: 1px solid #202c42; }
-        [data-testid="stSidebar"] > div:first-child { padding-top: 1.1rem; }
-        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2 { color: #79a8ff; }
-        .block-container { max-width: 1600px; padding: 1.1rem 1.4rem 2rem; }
-        h1, h2, h3 { color: #f4f7ff; letter-spacing: 0; }
-        h1 { font-size: 2rem; }
-        h2 { font-size: 1.35rem; }
-        h3 { font-size: 1rem; }
-        p, label, [data-testid="stCaptionContainer"] { color: #a9bad2; }
-        [data-testid="stMetric"] { background: #111b30; border: 1px solid #202c42; padding: 1rem; border-radius: 7px; }
-        [data-testid="stMetricLabel"] { color: #9aafcc; }
-        [data-testid="stMetricValue"] { color: #4ade80; }
-        [data-testid="stVerticalBlockBorderWrapper"] { background: #111b30; border-color: #202c42; border-radius: 7px; }
-        [data-testid="stDataFrame"] { border: 1px solid #202c42; border-radius: 7px; }
-        .stButton > button, .stDownloadButton > button { border-radius: 6px; border: 1px solid #33435d; background: #26354c; color: #f2f6ff; }
-        .stButton > button:hover, .stDownloadButton > button:hover { border-color: #6c9eff; color: #ffffff; }
-        .stButton > button[kind="primary"] { background: #df2e32; border-color: #df2e32; }
-        [data-testid="stRadio"] > div { gap: 0.25rem; }
-        [data-testid="stRadio"] label { padding: 0.35rem 0.55rem; border-radius: 5px; }
-        [data-testid="stAlert"] { background: #111b30; }
-        @media (max-width: 760px) {
-          .block-container { padding: 0.8rem 0.75rem 1.5rem; }
-          h1 { font-size: 1.6rem; }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.set_page_config(page_title="EduSense AI", page_icon=":material/school:", layout="wide")
 
     defaults = {
         "workspace_view": "Live monitor",
-        "navigate_live": False,
         "session_metrics": pd.DataFrame(),
         "session_attendance": pd.DataFrame(),
         "session_payload": {},
@@ -206,59 +175,90 @@ def main() -> None:
         if key not in st.session_state:
             st.session_state[key] = value
 
-    if st.session_state.pop("navigate_live", False):
-        st.session_state.workspace_view = "Live monitor"
-
-    def go_to_live() -> None:
-        st.session_state.navigate_live = True
-
     with st.sidebar:
         st.markdown("## EduSense AI")
-        st.caption("CLASSROOM INTELLIGENCE")
+        st.caption("Classroom intelligence")
         st.radio(
             "Workspace",
             ["Live monitor", "Analytics & reports", "Teacher profile"],
             key="workspace_view",
         )
-        st.divider()
-        st.subheader("Session setup")
-        source_mode = st.radio("Video source", ["Webcam", "Video file"], horizontal=True)
-        video_upload = st.file_uploader("Video file", type=["mp4", "avi", "mov", "mkv"])
-        audio_upload = st.file_uploader("Optional audio", type=["wav", "mp3", "flac", "ogg"])
-        model_upload = st.file_uploader("Optional face landmark model", type=["task"])
-        frame_limit = st.slider(
-            "Frames per run",
-            min_value=30,
-            max_value=1_200,
-            value=config.DASHBOARD_DEFAULT_MAX_FRAMES,
-            step=30,
-        )
-        expected_participants = st.number_input(
-            "Expected class size (optional)",
-            min_value=1,
-            max_value=300,
-            value=None,
-            step=1,
-            key="expected_participants",
-        )
-        ask_agent = st.checkbox("Request local Ollama suggestions", value=False)
-        save_history = st.checkbox("Save reports to local history", value=True)
-        run_clicked = st.button("Start analysis", type="primary", width="stretch")
-        st.divider()
-        st.caption("Media is temporary. Saved reports contain aggregate metrics and anonymous IDs.")
+        st.caption("Local processing. Video and raw audio are not saved.")
 
     view = st.session_state.workspace_view
-    title = {
-        "Live monitor": "Classroom monitor",
-        "Analytics & reports": "Analytics & reports",
-        "Teacher profile": "Teacher profile",
-    }[view]
-    top_left, top_right = st.columns([5, 1])
-    with top_left:
-        st.markdown(f"### {title}")
-    if view != "Live monitor":
-        with top_right:
-            st.button("Back to dashboard", on_click=go_to_live, width="stretch")
+    page_details = {
+        "Live monitor": ("Classroom monitor", ":material/monitoring:", "Local video analysis with anonymous session-only profiles."),
+        "Analytics & reports": ("Analytics & reports", ":material/analytics:", "Review engagement trends and roster-based attendance."),
+        "Teacher profile": ("Session profile", ":material/person_check:", "Reflect on observed signals; this is not an evaluation of teaching quality."),
+    }
+    title, title_icon, page_caption = page_details[view]
+    st.header(title, icon=title_icon)
+    st.caption(page_caption)
+
+    source_mode = st.session_state.get("source_mode", "Webcam")
+    video_upload = None
+    audio_upload = None
+    model_upload = None
+    frame_limit = config.DASHBOARD_DEFAULT_MAX_FRAMES
+    expected_participants = st.session_state.session_expected_participants
+    ask_agent = False
+    save_history = True
+    run_clicked = False
+
+    if view == "Live monitor":
+        st.markdown("#### Session setup")
+        source_mode = st.segmented_control(
+            "Video source",
+            ["Webcam", "Video file"],
+            default="Webcam",
+            key="source_mode",
+            width="stretch",
+            required=True,
+        )
+        with st.form("session_setup", border=True):
+            if source_mode == "Video file":
+                video_upload = st.file_uploader(
+                    "Classroom video", type=["mp4", "avi", "mov", "mkv"]
+                )
+            else:
+                st.caption("Webcam selected. Grant camera access when you start analysis.")
+
+            with st.expander("Optional inputs and analysis settings", icon=":material/tune:"):
+                audio_col, model_col = st.columns(2)
+                audio_upload = audio_col.file_uploader(
+                    "Optional audio", type=["wav", "mp3", "flac", "ogg"]
+                )
+                model_upload = model_col.file_uploader(
+                    "Optional face landmark model", type=["task"]
+                )
+
+                frame_col, roster_col = st.columns(2)
+                frame_limit = frame_col.slider(
+                    "Frames to analyze",
+                    min_value=30,
+                    max_value=1_200,
+                    value=config.DASHBOARD_DEFAULT_MAX_FRAMES,
+                    step=30,
+                )
+                if "expected_participants" not in st.session_state:
+                    st.session_state.expected_participants = expected_participants
+                expected_participants = roster_col.number_input(
+                    "Expected class size (optional)",
+                    min_value=1,
+                    max_value=300,
+                    step=1,
+                    key="expected_participants",
+                )
+
+                options_col, history_col = st.columns(2)
+                ask_agent = options_col.checkbox("Request local teaching suggestions", value=False)
+                save_history = history_col.checkbox("Save report to local history", value=True)
+            run_clicked = st.form_submit_button(
+                "Start local analysis",
+                type="primary",
+                icon=":material/play_arrow:",
+                width="stretch",
+            )
 
     if run_clicked:
         temporary_paths = []
@@ -280,16 +280,22 @@ def main() -> None:
                 temporary_paths.append(temporary_model)
                 model_path = str(temporary_model)
 
-            preview = st.empty()
+            preview = st.skeleton(height=420)
             status = st.empty()
-            metrics, attendance, payload, last_frame = run_analysis(
-                source=source,
-                frame_limit=frame_limit,
-                audio_windows=audio_windows,
-                media_pipe_model=model_path,
-                preview=preview,
-                status=status,
-            )
+            with st.status("Analyzing the session locally", expanded=True) as analysis_status:
+                metrics, attendance, payload, last_frame = run_analysis(
+                    source=source,
+                    frame_limit=frame_limit,
+                    audio_windows=audio_windows,
+                    media_pipe_model=model_path,
+                    preview=preview,
+                    status=status,
+                )
+                analysis_status.update(
+                    label="Analysis complete",
+                    state="complete",
+                    expanded=False,
+                )
             if metrics.empty:
                 st.warning("No frames were read from the selected source.")
             else:
@@ -339,17 +345,25 @@ def main() -> None:
     saved_sessions = list_sessions()
 
     if view == "Live monitor":
-        st.caption("LOCAL SESSION  /  Anonymous tracking  /  No cloud upload")
+        st.caption("Local session · Anonymous tracking · No cloud upload")
         live_col, insight_col = st.columns([2.35, 1], gap="medium")
         with live_col:
             with st.container(border=True):
                 live_header, live_status = st.columns([4, 1])
-                live_header.markdown("#### Live video")
-                live_status.markdown("**LIVE**" if has_session else "**READY**")
+                live_header.markdown("#### Latest frame")
+                live_status.badge(
+                    "Run complete" if has_session else "Ready",
+                    color="green" if has_session else "gray",
+                )
                 if st.session_state.session_frame is not None:
-                    st.image(st.session_state.session_frame, channels="BGR", width="stretch")
+                    st.image(
+                        st.session_state.session_frame,
+                        channels="BGR",
+                        width="stretch",
+                        alt="Latest analyzed frame with anonymous face tracking overlays",
+                    )
                 else:
-                    st.info("Choose a webcam or video file, then start a local analysis session.")
+                    st.caption(":material/videocam_off: Choose a webcam or video file in Session setup to begin.")
             profile_col, suggestion_col = st.columns(2, gap="medium")
             with profile_col:
                 with st.container(border=True):
@@ -359,6 +373,7 @@ def main() -> None:
                             attendance[["profile_id", "status", "cumulative_frames", "active"]],
                             width="stretch",
                             hide_index=True,
+                            alt="Anonymous profile tracks and their attendance confirmation status",
                         )
                     else:
                         st.caption("No profiles tracked yet.")
@@ -378,28 +393,32 @@ def main() -> None:
                     metrics,
                     expected_participants=expected_participants,
                 )
-                st.metric("Profiles present", int(current["present_profiles"]))
+                st.metric("Profiles confirmed", int(current["present_profiles"]))
                 st.metric("Engagement", f"{current['engagement_score']:.1f} / 100")
                 roster_attendance = (
                     f"{summary['present_profiles']}/{expected_participants} "
                     f"({summary['attendance_rate']:.1f}%)"
                     if summary["attendance_rate"] is not None
-                    else "Set class size"
+                    else "Not set"
                 )
                 st.metric("Roster attendance", roster_attendance)
                 st.caption(
                     f"{summary['present_profiles']} of {summary['tracked_profiles']} detected IDs "
                     "met the presence threshold."
                 )
+                if summary["attendance_rate"] is None:
+                    st.caption("Set expected class size in Session setup for a roster percentage.")
+                st.caption("Engagement is a heuristic signal, not an assessment of learning.")
                 with st.container(border=True):
                     st.markdown("#### Audio activity")
                     st.caption(st.session_state.session_audio_source)
                     st.markdown(f"**{current['audio_activity']}**")
                     st.caption(f"{current['audio_dbfs']:.1f} dBFS")
             else:
-                st.metric("Profiles present", "--")
+                st.metric("Profiles confirmed", "--")
                 st.metric("Engagement", "--")
-                st.metric("Attendance", "--")
+                st.metric("Roster attendance", "--")
+                st.caption("Set expected class size in Session setup before analysis.")
                 with st.container(border=True):
                     st.markdown("#### Audio activity")
                     st.caption("Upload an audio file to estimate room activity.")
@@ -490,7 +509,7 @@ def main() -> None:
                     f"{summary['present_profiles']}/{report_expected_participants} "
                     f"({summary['attendance_rate']:.1f}%)"
                     if summary["attendance_rate"] is not None
-                    else "Set class size"
+                    else "Not set"
                 ),
             )
             st.caption(
@@ -508,6 +527,7 @@ def main() -> None:
                 data=report_metrics.to_csv(index=False).encode("utf-8"),
                 file_name="session_metrics.csv",
                 mime="text/csv",
+                icon=":material/download:",
                 width="stretch",
             )
             pdf_col.download_button(
@@ -521,9 +541,10 @@ def main() -> None:
                 ),
                 file_name="session_report.pdf",
                 mime="application/pdf",
+                icon=":material/picture_as_pdf:",
                 width="stretch",
             )
-            if clear_col.button("Clear saved history"):
+            if clear_col.button("Clear saved history", icon=":material/delete:"):
                 st.session_state.confirm_clear_history = True
             if st.session_state.confirm_clear_history:
                 st.warning("This deletes all saved local reports. The current unsaved run remains open.")
@@ -543,14 +564,24 @@ def main() -> None:
                     st.line_chart(
                         report_metrics.set_index("timestamp")[["engagement_score", "focus_score", "movement_score"]],
                         height=280,
+                        alt="Engagement and visual signal trends over the selected session",
                     )
             with audio_col:
                 with st.container(border=True):
                     st.markdown("#### Audio activity over time")
                     activity_counts = report_metrics["audio_activity"].value_counts().rename_axis("activity").to_frame("samples")
-                    st.bar_chart(activity_counts, height=280)
+                    st.bar_chart(
+                        activity_counts,
+                        height=280,
+                        alt="Counts of audio activity classifications in the selected session",
+                    )
             st.markdown("#### Attendance")
-            st.dataframe(report_attendance, width="stretch", hide_index=True)
+            st.dataframe(
+                report_attendance,
+                width="stretch",
+                hide_index=True,
+                alt="Attendance status and observed frames for anonymous tracked profiles",
+            )
             st.caption(
                 f"Minimum engagement {summary['minimum_engagement']:.1f}/100. Audio source: "
                 f"{report_audio_source.lower()}."

@@ -117,6 +117,18 @@ class EngagementTests(unittest.TestCase):
         self.assertLess(score.score, 25.0)
         self.assertTrue(score.sustained_inactivity)
 
+    def test_stillness_alone_does_not_penalize_focused_participants(self) -> None:
+        scorer = EngagementScorer(movement_window=3)
+        score = scorer.score(
+            focus_scores=[80.0],
+            movement_values=[0.0, 0.0, 0.0],
+            audio_level=0.25,
+        )
+
+        self.assertEqual(score.movement_score, 0.0)
+        self.assertGreater(score.score, 50.0)
+        self.assertFalse(score.sustained_inactivity)
+
     def test_audio_samples_are_reduced_to_a_bounded_activity_measure(self) -> None:
         """Dropping RMS normalization would make optional audio metrics unusable."""
         sample = analyze_audio_samples(np.array([0.5, -0.5, 0.5, -0.5]), sample_rate=16_000)

@@ -577,11 +577,14 @@ class EngagementScorer:
         sustained_inactivity = bool(recent_movement) and (
             len(recent_movement) >= self.movement_window
             and mean_movement <= config.INACTIVITY_MOVEMENT_THRESHOLD_PIXELS
+            and focus_score <= config.INACTIVITY_FOCUS_THRESHOLD
+            and audio_level * 100.0 <= config.INACTIVITY_AUDIO_THRESHOLD
         )
         audio_score = clamp(audio_level, 0.0, 1.0) * 100.0
+        movement_contribution = 50.0 + movement_score * 0.1
         combined = (
             (focus_score * self.weights.focus)
-            + (movement_score * self.weights.movement)
+            + (movement_contribution * self.weights.movement)
             + (audio_score * self.weights.audio)
         )
         return EngagementScore(

@@ -28,7 +28,7 @@ python app.py --source 0
 Dashboard:
 
 ```powershell
-streamlit run dashboard.py
+python -m streamlit run dashboard.py
 ```
 
 The dashboard accepts webcam/video input, optional audio files processed locally with Librosa, and an optional local MediaPipe Face Landmarker `.task` model. Without a MediaPipe model, it uses OpenCV Haar cascades.
